@@ -46,19 +46,19 @@ Saída esperada
 ```
 $cd examples && make exec &
 $curl http://localhost:8000/home
-  <!DOCTYPE html>
-	<html>
-	<head>
-		<meta charset="utf-8">
-		<meta name="viewport" content="width=device-width, initial-scale=1">
-		<title>Example</title>
-	</head>
-	<body>
-		<div>
-			Hello, world!
-		</div>
-	</body>
-	</html>
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Example</title>
+</head>
+<body>
+	<div>
+		Hello, world!
+	</div>
+</body>
+</html>
 ```
 
 
