@@ -68,7 +68,7 @@ Saída esperada
 
 ```
 $cd examples && make exec &
-$curl http://localhost:8000/home
+$curl http://localhost:8000/index.html
 <!DOCTYPE html>
 <html>
 <head>
