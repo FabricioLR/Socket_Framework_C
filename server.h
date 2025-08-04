@@ -9,7 +9,10 @@
 #include <unistd.h>
 #include <assert.h>
 
+#include "utils.h"
+
 #define MAX_ROUTES 10
+#define MAX_DIRECTORIES 10
 
 enum Method {
 	GET = 0,
@@ -37,7 +40,7 @@ struct Request {
 	char *raw_body;
 	int raw_body_length;
 
-	char *path;
+	char *url;
 	char *protocol;
 	Method method;
 
@@ -68,13 +71,119 @@ struct Route {
 };
 typedef struct Route Route;
 
+struct Directory {
+	char *path;
+};
+typedef struct Directory Directory;
+
 struct Server {
 	int server_fd;
+
 	Route *routes;
 	int max_routes;
 	int count_routes;
+
+	Directory *directories;
+	int max_directories;
+	int count_directories;
 };
 typedef struct Server Server;
+
+struct Header {
+	char *key;
+	char *value;
+};
+typedef struct Header Header;
+struct Headers {
+	Header *header;
+	int count;
+	int capacity;
+};
+typedef struct Headers Headers;
+
+void add_header(Headers *headers, char *key, char *value){
+	if (headers->count >= headers->capacity){
+		headers->header = (Header *)realloc(headers->header, sizeof(Headers) * headers->capacity * 2);
+		headers->capacity *= 2;
+	}
+	Header *header = &(headers->header[headers->count]);
+	header->key = key;
+	header->value = value;
+	headers->count++;
+}
+
+Headers *headers_parse(char *string){
+	int length = strlen(string);
+
+	Headers *headers = (Headers *)malloc(sizeof(Headers));
+	assert(headers != NULL);
+
+	headers->count = 0;
+	headers->capacity = 10;
+	headers->header = (Header *)malloc(sizeof(Header) * headers->capacity);
+	assert(headers->header != NULL);
+
+	int value_end = 0, key_end = 0, is_value = 0;
+	char *key = NULL;
+	for (int i = 0; i < length - 1; i++){
+		if (string[i] == ':' && is_value == 0){
+			key_end = i;
+			key = substring(string, value_end, key_end);
+			is_value = 1;
+			key_end++;
+			continue;
+		}
+		if (string[i] == '\r' && string[i + 1] == '\n'){
+			value_end = i;
+			if (string[key_end] == ' ') key_end++;
+			char *value = substring(string, key_end, value_end);
+			is_value = 0;
+
+			add_header(headers, key, value);
+			value_end += 2;
+			continue;
+		}
+	}
+
+	return headers;
+}
+
+Headers *headers_init(){
+	Headers *headers = (Headers *)malloc(sizeof(Headers));
+	assert(headers != NULL);
+
+	headers->count = 0;
+	headers->capacity = 10;
+	headers->header = (Header *)malloc(sizeof(Header) * headers->capacity);
+	assert(headers->header != NULL);
+
+	return headers;
+}
+
+char *get_header_value(Headers *headers, char *key){
+	assert(headers != NULL);
+
+	for (int i = 0; i < headers->count; i++){
+		if (strcmp(headers->header[i].key, key) == 0){
+			return headers->header[i].value;
+		}
+	}
+
+	return "";
+}
+
+char *status_code_to_text(Status status_code){
+	switch (status_code){
+		case 404:
+			return "Not Found";
+		case 200:
+			return "Ok";
+		case 405:
+			return "Method Not Allowed";
+		default:
+			return "Unkown";
+	}
+}
 
 Server *init(int port, int max_connections){
 	int server_fd, bind_result, listen_result;
@@ -88,6 +197,12 @@ Server *init(int port, int max_connections){
 
 	server->max_routes = MAX_ROUTES;
 	server->count_routes = 0;
+
+	server->directories = (Directory *)malloc(MAX_DIRECTORIES * sizeof(Directory));
+	assert(server->directories != NULL);
+
+	server->max_directories = MAX_DIRECTORIES;
+	server->count_directories = 0;
 
 	server_fd = socket(AF_INET, SOCK_STREAM, 0);
 	assert(server_fd >= 0);
@@ -109,6 +224,18 @@ Server *init(int port, int max_connections){
     return server;
 }
 
+void add_static_directory(Server *server, char *path){
+	assert(server->count_directories < server->max_directories);
+
+	int path_length = strlen(path);
+
+	Directory *directory = &server->directories[server->count_directories];
+
+	directory->path = path;
+
+	server->count_directories++;
+}
+
 void add_route(Server *server, char *path, Method method, void *callback){
 	assert(server->count_routes < server->max_routes);
 	assert(path[0] == '/');
@@ -127,22 +254,8 @@ void add_route(Server *server, char *path, Method method, void *callback){
 	server->count_routes++;
 }
 
-char *substring(char *string, int start, int end){
-	char *buffer = (char *)malloc(end - start);
-	assert(buffer != NULL);
-
-	int j = 0;
-	for (int i = start; i < end; i++){
-		buffer[j] = string[i];
-		j++;
-	}
-	buffer[j] = '\0';
-
-	return buffer;
-}
-
 void extract_request_line(Request *request){
-	int method_end_offset = 0, path_end_offset = 0, protocol_end_offset = 0;
+	int method_end_offset = 0, url_end_offset = 0, protocol_end_offset = 0;
 
 	int space_count = 0;
 	for (int i = 0; i < request->raw_request_length; i++){
@@ -152,15 +265,15 @@ void extract_request_line(Request *request){
 		if (space_count == 0){
 			method_end_offset = i;
 		} else if (space_count == 1){
-			path_end_offset = i;
+			url_end_offset = i;
 		} else if (space_count == 2){
 			protocol_end_offset = i;
 		}
 	}
 
 	char *method = substring(request->raw_request, 0, method_end_offset + 1);
-	char *path = substring(request->raw_request, method_end_offset + 2, path_end_offset + 1);
-	char *protocol = substring(request->raw_request, path_end_offset + 2, protocol_end_offset + 1);
+	char *url = substring(request->raw_request, method_end_offset + 2, url_end_offset + 1);
+	char *protocol = substring(request->raw_request, url_end_offset + 2, protocol_end_offset + 1);
 
 	//printf("(%s) (%s) (%s)\n", method, path, protocol);
 
@@ -174,9 +287,8 @@ void extract_request_line(Request *request){
 
 	free(method);
 
-	request->path = path;
+	request->url = url;
 	request->protocol = protocol;
-
 }
 
 void extract_body(Request *request){
@@ -193,53 +305,42 @@ void extract_body(Request *request){
 
 	//printf("(%s)\n", body);
 
+	request->raw_body = body;
 	request->raw_body_length = body_length;
-	request->raw_body = (char *)malloc(body_length);
-	assert(request->raw_body != NULL);
-	strcpy(request->raw_body, body);
+}
+
+void extract_headers(Request *request){
+	int request_line_end_offset = 0, body_start_offset = 0;
+	for (int i = 0; i < request->raw_request_length; i++){
+		if (request_line_end_offset == 0){
+			if (request->raw_request[i] == '\r' && request->raw_request[i + 1] == '\n') request_line_end_offset = i + 2;
+		}
+		if (body_start_offset == 0){
+			if (request->raw_request[i] == '\r' && request->raw_request[i + 1] == '\n' && request->raw_request[i + 2] == '\r' && request->raw_request[i + 3] == '\n') { 
+				body_start_offset = i;
+				break;
+			};
+		}
+	}
+
+	char *headers = substring(request->raw_request, request_line_end_offset, body_start_offset);
+	int headers_length = body_start_offset - request_line_end_offset;
+
+	request->raw_headers = headers;
+	request->raw_request_length = headers_length;
 }
 
 void parse_raw_request(Request *request){
 	extract_request_line(request);
 	extract_body(request);
-	//extract_headers(request);
+	extract_headers(request);
 }
 
-/*void create_response(Response *response, Status status_code, char *headers, char *body){
-	int body_length = strlen(body);
-	int headers_length = strlen(headers);
-
-	response->status_code = status_code;
-	response->body_length = body_length;
-	response->headers_length = headers_length;
-
-	response->body = (char *)malloc(body_length);
-	assert(response->body != NULL);
-	strcpy(response->body, body);
-
-	response->headers = (char *)malloc(headers_length);
-	assert(response->headers != NULL);
-	strcpy(response->headers, headers);
-}*/
-
-char *status_code_to_text(Status status_code){
-	switch (status_code){
-		case 404:
-			return "Not Found";
-		case 200:
-			return "Ok";
-		case 405:
-			return "Method Not Allowed";
-		default:
-			return "Unkown";
-	}
-}
-
-void send_response(Response *response, char *headers, char *body, Status status_code){
+void send_response(Response *response, Headers *headers, char *body, Status status_code){
 	char *status_text = status_code_to_text(status_code);
 
 	int body_length = strlen(body);
-	int headers_length = strlen(headers);
+	//int headers_length = strlen(headers);
 
 	response->raw_response = (char *)malloc(1024);
 	assert(response->raw_response != NULL);
@@ -248,8 +349,10 @@ void send_response(Response *response, char *headers, char *body, Status status_
 
 	total_length += sprintf(response->raw_response, "%s %d %s\n", response->protocol, status_code, status_text);
 
-	if (headers_length > 0){
-		total_length += sprintf(response->raw_response + total_length, "%s\r\n", headers);
+	if (headers != NULL){
+		for (int i = 0; i < headers->count; i++){
+			total_length += sprintf(response->raw_response + total_length, "%s: %s\r\n", headers->header[i].key, headers->header[i].value);
+		}
 	}
 
 	if (body_length > 0){
@@ -265,10 +368,73 @@ void send_response(Response *response, char *headers, char *body, Status status_
 	close(response->client_fd);
 }
 
-void default_callback(Request *request, Response *response, char *headers, char *message, int status_code){
-	//create_response(response, status_code, headers, message);
+char *url_get_path(char *url){
+	int length = strlen(url);
 
-	send_response(response, headers, message, status_code);
+	int path_end_offset = length;
+	for (int i = 0; i < length; i++){
+		if (url[i] == '?' || url[i] == '#'){
+			path_end_offset = i;
+			break;			
+		}
+	}
+	return substring(url, 0, path_end_offset);
+}
+
+char *url_get_query_string(char *url){
+	int length = strlen(url);
+
+	int query_string_start_offset = 0, query_string_end_offset = length;
+	for (int i = 0; i < length; i++){
+		if (url[i] == '?'){
+			query_string_start_offset = i + 1;			
+		} else if (url[i] == '#'){
+			query_string_end_offset = i;
+		}
+	}
+	return substring(url, query_string_start_offset, query_string_end_offset);
+}
+
+char *url_get_fragment(char *url){
+	int length = strlen(url);
+
+	int fragment_start_offset = length;
+	for (int i = 0; i < length; i++){
+		if (url[i] == '#'){
+			fragment_start_offset = i + 1;			
+			break;
+		}
+	}
+	return substring(url, fragment_start_offset, length);
+}
+
+void default_callback(Request *request, Response *response, Headers *headers, char *message, int status_code){
+	Headers *response_headers = headers_init();
+	add_header(response_headers, "Content-Type", "text/html; charset=utf-8");
+
+	send_response(response, response_headers, message, status_code);
+}
+
+void default_static_directory_callback(Request *request, Response *response, char *file_path){
+	FILE *file = fopen(file_path, "r");
+
+	fseek(file, 0, SEEK_END);
+	int size = ftell(file);
+	fseek(file, 0, SEEK_SET);
+
+	char *buffer = malloc(size + 10);
+	assert(buffer != NULL);
+	fread(buffer, sizeof(char), size, file);
+	buffer[size] = '\0';
+
+	Headers *response_headers = headers_init();
+	add_header(response_headers, "Content-Type", "text/html; charset=utf-8");
+
+	send_response(response, response_headers, buffer, OK);
+
+	free(request);
+	free(response);
+	fclose(file);
 }
 
 void handle_request(Server *server){
@@ -294,22 +460,40 @@ void handle_request(Server *server){
     response->client_fd = client_fd;
     response->protocol = request->protocol;
 
-    int count = 0;
+    char *path = url_get_path(request->url);
+
+    for (int i = 0; i < server->count_directories; i++){
+    	Directory *directory = &server->directories[i]; 
+
+    	int directory_path_length = strlen(directory->path);
+    	int path_length = strlen(path);
+
+    	char *full_path = malloc(directory_path_length + path_length + 5);
+    	assert(full_path != NULL);
+
+    	sprintf(full_path, "%s%s", directory->path, path);
+
+    	if (access(full_path, F_OK) == 0) {
+    		default_static_directory_callback(request, response, full_path);
+    		return;
+    	}
+    }
+
     for (int i = 0; i < server->count_routes; i++){
     	Route *route = &server->routes[i];
 
-    	if (strcmp(route->path, request->path) == 0){
+    	if (strcmp(route->path, path) == 0){
     		if (route->method == request->method){
     			route->callback(request, response);
     			return;
     		} else {
-    			default_callback(request, response, "", "Method not allowed", METHOD_NOT_ALLOWED);
+    			default_callback(request, response, NULL, "Method not allowed", METHOD_NOT_ALLOWED);
     			return;
     		}
     	}
     }
 
-    default_callback(request, response, "", "Path not found", NOT_FOUND);
+    default_callback(request, response, NULL, "Path not found", NOT_FOUND);
     return;
 }
 

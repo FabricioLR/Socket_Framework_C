@@ -15,21 +15,44 @@ Apenas copie o arquivo ![server.h](https://github.com/FabricioLR/Socket_Framewor
 ## ☕ Usando
 
 ```
-#include "server.h"
+void index_callback(Request *request, Response *response){
+	Headers *request_headers = headers_parse(request->raw_headers);
+ 
+	printf("%s\n", get_header_value(request_headers, "User-Agent"));
 
-void home_callback(Request *request, Response *response){
-	FILE *file = fopen("index.html", "r");
+	Headers *response_headers = headers_init();
+	add_header(response_headers, "Content-Type", "text/html; charset=utf-8");
+	add_header(response_headers, "Hello", "World");
 
-	char buffer[2048];
-	fread(&buffer, sizeof(char), sizeof(buffer), file);
+	send_response(response, response_headers, "Server is running", OK);
 
-	send_response(response, "Content-Type: text/html; charset=utf-8", buffer, OK);
+	free(request);
+	free(response);
+}
+
+void add_user_callback(Request *request, Response *response){
+	printf("request body: (%s) %d\n", request->raw_body, request->raw_body_length);
+
+	JSON *body = json_parse(request->raw_body);
+
+	print_json(body);
+
+	Headers *response_headers = headers_init();
+	add_header(response_headers, "Content-Type", "application/json");
+
+	send_response(response, response_headers, "{\"success\": \"true\"}\r\n", OK);
+
+	free(request);
+	free(response);
 }
 
 int main(int argc, char **argv){
-	Server *server = init(8000, 10);
+	Server *server = init(PORT, MAX_CONNECTIONS);
 
-	add_route(server, "/home", GET, home_callback);
+	add_route(server, "/", GET, index_callback);
+	add_route(server, "/add-user", POST, add_user_callback);
+
+	add_static_directory(server, "public");
 
 	while (1){
 		handle_request(server);
